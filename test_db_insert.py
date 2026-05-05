@@ -24,6 +24,7 @@ def test_insert_diet_log():
             print("[INFO] No users found in the database. Creating a test user first...")
             test_user = User(
                 email="test_user@example.com",
+                password="test_password123",
                 supabase_uid=str(uuid.uuid4()),
                 name="Test User",
                 age=25,

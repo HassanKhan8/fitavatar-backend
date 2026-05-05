@@ -59,6 +59,7 @@ def setup_profile(
 
     user = User(
         email          = body.email,
+        password       = body.password,
         supabase_uid   = user_uuid,
         name           = body.name,
         age            = body.age,

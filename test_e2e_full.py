@@ -78,6 +78,7 @@ def test_01_setup_profile():
     
     payload = {
         "email": TEST_USER_EMAIL,
+        "password": "test_password_e2e",
         "name": "E2E Test User",
         "age": 28,
         "weight_kg": 75.5,

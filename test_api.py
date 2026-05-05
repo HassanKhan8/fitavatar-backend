@@ -59,6 +59,7 @@ def test_auth_invalid_email():
     """Test with invalid email format"""
     response = client.post("/auth/setup-profile", json={
         "email": "invalid-email",
+        "password": "test_password",
         "name": "Test User",
         "age": 30,
         "weight_kg": 80,
@@ -76,6 +77,7 @@ def test_auth_invalid_gender():
     """Test with invalid gender"""
     response = client.post("/auth/setup-profile", json={
         "email": "test@example.com",
+        "password": "test_password",
         "name": "Test User",
         "age": 30,
         "weight_kg": 80,
@@ -93,6 +95,7 @@ def test_auth_invalid_goal():
     """Test with invalid goal"""
     response = client.post("/auth/setup-profile", json={
         "email": "test@example.com",
+        "password": "test_password",
         "name": "Test User",
         "age": 30,
         "weight_kg": 80,
@@ -110,6 +113,7 @@ def test_auth_invalid_country():
     """Test with unsupported country"""
     response = client.post("/auth/setup-profile", json={
         "email": "test@example.com",
+        "password": "test_password",
         "name": "Test User",
         "age": 30,
         "weight_kg": 80,
@@ -127,6 +131,7 @@ def test_auth_age_too_low():
     """Test with age below minimum"""
     response = client.post("/auth/setup-profile", json={
         "email": "test@example.com",
+        "password": "test_password",
         "name": "Test User",
         "age": 5,
         "weight_kg": 80,
@@ -144,6 +149,7 @@ def test_auth_height_too_low():
     """Test with height below minimum"""
     response = client.post("/auth/setup-profile", json={
         "email": "test@example.com",
+        "password": "test_password",
         "name": "Test User",
         "age": 30,
         "weight_kg": 80,

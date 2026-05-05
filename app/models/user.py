@@ -13,6 +13,7 @@ class User(Base):
 
     id             = Column(Integer, primary_key=True, index=True)
     email          = Column(String, unique=True, index=True, nullable=False)
+    password       = Column(String, nullable=False)
     supabase_uid   = Column(String, unique=True, index=True, nullable=False)
     name           = Column(String, nullable=False)
     age            = Column(Integer, nullable=False)

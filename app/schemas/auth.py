@@ -16,6 +16,7 @@ SUPPORTED_COUNTRIES = [
 
 class ProfileSetupRequest(BaseModel):
     email:          EmailStr
+    password:       str
     name:           str
     age:            int
     weight_kg:      float
@@ -87,6 +88,7 @@ class UserProfile(BaseModel):
     id:             int
     supabase_uid:   str
     email:          str
+    password:       str
     name:           str
     age:            int
     weight_kg:      float
