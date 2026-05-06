@@ -13,7 +13,8 @@ class User(Base):
 
     id             = Column(Integer, primary_key=True, index=True)
     email          = Column(String, unique=True, index=True, nullable=False)
-    password       = Column(String, nullable=False)
+    # Supabase Auth owns passwords; this column exists only for legacy schema compatibility.
+    password       = Column(String, nullable=False, default="__managed_by_supabase__")
     supabase_uid   = Column(String, unique=True, index=True, nullable=False)
     name           = Column(String, nullable=False)
     age            = Column(Integer, nullable=False)

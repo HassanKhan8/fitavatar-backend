@@ -6,6 +6,7 @@ Registers all routers, CORS, startup events, and health check.
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+import os
 
 from app.config import APP_NAME, APP_VERSION
 from app.database import create_tables
@@ -21,12 +22,14 @@ async def lifespan(app: FastAPI):
     # Startup
     print(f"[{APP_NAME}] Starting up...")
 
-    try:
-        create_tables()
-        print(f"[{APP_NAME}] Database tables verified.")
-    except Exception as e:
-        print(f"[{APP_NAME}] [WARNING] Database warning: {e}")
-        print(f"[{APP_NAME}]    Check DATABASE_URL env var in Render dashboard.")
+    # Avoid unexpected DDL on managed databases in production.
+    if os.getenv("AUTO_CREATE_TABLES", "false").lower() == "true":
+        try:
+            create_tables()
+            print(f"[{APP_NAME}] Database tables verified.")
+        except Exception as e:
+            print(f"[{APP_NAME}] [WARNING] Database warning: {e}")
+            print(f"[{APP_NAME}]    Check DATABASE_URL env var in Render dashboard.")
 
     # Pre-load ML model so first request isn't slow
     try:
@@ -52,8 +55,10 @@ app = FastAPI(
 # ── CORS — allow Android app and any origin during development ────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins     = ["*"],   # Restrict to your domain in production
-    allow_credentials = True,
+    # Android apps are not subject to browser CORS, but keeping this safe
+    # prevents future web clients from failing with wildcard+credentials.
+    allow_origins     = ["*"],   # Set explicit origins in production if you add a web frontend
+    allow_credentials = False,
     allow_methods     = ["*"],
     allow_headers     = ["*"],
 )

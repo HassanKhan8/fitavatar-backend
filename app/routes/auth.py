@@ -59,7 +59,9 @@ def setup_profile(
 
     user = User(
         email          = body.email,
-        password       = body.password,
+        # Passwords are managed by Supabase Auth. We keep a non-sensitive placeholder
+        # only to satisfy legacy NOT NULL DB schema during testing.
+        password       = "__managed_by_supabase__",
         supabase_uid   = user_uuid,
         name           = body.name,
         age            = body.age,

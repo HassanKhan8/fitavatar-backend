@@ -7,7 +7,9 @@
 CREATE TABLE IF NOT EXISTS users (
     id              SERIAL PRIMARY KEY,
     email           TEXT UNIQUE NOT NULL,
-    password        TEXT NOT NULL,
+    -- Supabase Auth owns passwords; keep a non-sensitive placeholder default
+    -- for backward compatibility with older app versions/tests.
+    password        TEXT NOT NULL DEFAULT '__managed_by_supabase__',
     supabase_uid    UUID UNIQUE NOT NULL,
     name            TEXT NOT NULL,
     age             INTEGER NOT NULL CHECK (age BETWEEN 10 AND 100),
