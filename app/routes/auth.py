@@ -11,6 +11,7 @@ PUT  /auth/profile       — Update user profile (protected)
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import OperationalError
 from app.database import get_db
 from app.models.user import User
 from app.models.user_progress import UserProgress
@@ -40,55 +41,87 @@ def setup_profile(
     if user_uuid is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="invalid or expired supabase tokens",
+            detail="Invalid or expired Supabase token",
         )
 
-    existing_by_uid = db.query(User).filter(User.supabase_uid == user_uuid).first()
-    if existing_by_uid:
+    try:
+        existing_by_uid = db.query(User).filter(User.supabase_uid == user_uuid).first()
+        if existing_by_uid:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Profile already set up for this Supabase account.",
+            )
+
+        existing_by_email = db.query(User).filter(User.email == body.email).first()
+        if existing_by_email:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="An account with this email already exists in the profile database.",
+            )
+
+        user = User(
+            email          = body.email,
+            # Passwords are managed by Supabase Auth. We keep a non-sensitive placeholder
+            # only to satisfy legacy NOT NULL DB schema during testing.
+            password       = "__managed_by_supabase__",
+            supabase_uid   = user_uuid,
+            name           = body.name,
+            age            = body.age,
+            weight_kg      = body.weight_kg,
+            height_cm      = body.height_cm,
+            gender         = body.gender,
+            goal           = body.goal,
+            activity_level = body.activity_level,
+            country        = body.country,
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+
+        # Log complete initial user progress
+        progress_log = UserProgress(
+            user_id   = user.id,
+            age       = user.age,
+            weight_kg = user.weight_kg,
+            height_cm = user.height_cm,
+            goal      = user.goal,
+            location  = user.country,
+        )
+        db.add(progress_log)
+        db.commit()
+
+        return UserProfile.model_validate(user)
+
+    except HTTPException:
+        # Re-raise HTTP exceptions (409 Conflict, etc.)
+        raise
+    except OperationalError as e:
+        db.rollback()
+        error_msg = str(e)
+        print(f"[ProfileSetup] Database error: {error_msg}")
+        
+        if "tenant/user" in error_msg or "ENOTFOUND" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Database connection failed. Server misconfiguration: DATABASE_URL invalid or Supabase project unavailable. Admin should verify Render environment variables.",
+            )
+        elif "could not connect" in error_msg or "connection refused" in error_msg:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Cannot connect to database server. Network or connectivity issue.",
+            )
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Database operation failed. Please try again later.",
+            )
+    except Exception as e:
+        db.rollback()
+        print(f"[ProfileSetup] Unexpected error: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="Profile already set up for this Supabase account.",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unexpected server error during profile setup.",
         )
-
-    existing_by_email = db.query(User).filter(User.email == body.email).first()
-    if existing_by_email:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="An account with this email already exists in the profile database.",
-        )
-
-    user = User(
-        email          = body.email,
-        # Passwords are managed by Supabase Auth. We keep a non-sensitive placeholder
-        # only to satisfy legacy NOT NULL DB schema during testing.
-        password       = "__managed_by_supabase__",
-        supabase_uid   = user_uuid,
-        name           = body.name,
-        age            = body.age,
-        weight_kg      = body.weight_kg,
-        height_cm      = body.height_cm,
-        gender         = body.gender,
-        goal           = body.goal,
-        activity_level = body.activity_level,
-        country        = body.country,
-    )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
-
-    # Log complete initial user progress
-    progress_log = UserProgress(
-        user_id   = user.id,
-        age       = user.age,
-        weight_kg = user.weight_kg,
-        height_cm = user.height_cm,
-        goal      = user.goal,
-        location  = user.country,
-    )
-    db.add(progress_log)
-    db.commit()
-
-    return UserProfile.model_validate(user)
 
 
 @router.get("/me", response_model=UserProfile)
@@ -104,25 +137,41 @@ def update_profile(
     db: Session = Depends(get_db),
 ):
     """Update user profile fields and log a new UserProgress snapshot."""
-    update_data = body.model_dump(exclude_unset=True)
+    try:
+        update_data = body.model_dump(exclude_unset=True)
 
-    if not update_data:
+        if not update_data:
+            return UserProfile.model_validate(current_user)
+
+        for field, value in update_data.items():
+            setattr(current_user, field, value)
+
+        # Log the complete snapshot after update
+        progress_log = UserProgress(
+            user_id   = current_user.id,
+            age       = current_user.age,
+            weight_kg = current_user.weight_kg,
+            height_cm = current_user.height_cm,
+            goal      = current_user.goal,
+            location  = current_user.country,
+        )
+        db.add(progress_log)
+
+        db.commit()
+        db.refresh(current_user)
         return UserProfile.model_validate(current_user)
 
-    for field, value in update_data.items():
-        setattr(current_user, field, value)
-
-    # Log the complete snapshot after update
-    progress_log = UserProgress(
-        user_id   = current_user.id,
-        age       = current_user.age,
-        weight_kg = current_user.weight_kg,
-        height_cm = current_user.height_cm,
-        goal      = current_user.goal,
-        location  = current_user.country,
-    )
-    db.add(progress_log)
-
-    db.commit()
-    db.refresh(current_user)
-    return UserProfile.model_validate(current_user)
+    except OperationalError as e:
+        db.rollback()
+        print(f"[ProfileUpdate] Database error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Database operation failed. Please try again later.",
+        )
+    except Exception as e:
+        db.rollback()
+        print(f"[ProfileUpdate] Unexpected error: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Unexpected server error during profile update.",
+        )
