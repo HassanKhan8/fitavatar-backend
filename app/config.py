@@ -18,10 +18,16 @@ DATABASE_URL: str = os.getenv(
 )
 
 # ── Supabase Auth ─────────────────────────────────────────────────────────────
-SUPABASE_JWT_SECRET: str = os.getenv(
-    "SUPABASE_JWT_SECRET", 
-    "missing-secret-key"
-)
+SUPABASE_JWT_SECRET: str = os.getenv("SUPABASE_JWT_SECRET", "missing-secret-key")
+# Optional: allow multiple valid secrets during JWT secret rotation.
+# Format: comma-separated list, e.g. "newsecret,oldsecret"
+SUPABASE_JWT_SECRETS = [
+    s.strip()
+    for s in os.getenv("SUPABASE_JWT_SECRETS", "").split(",")
+    if s.strip()
+]
+if not SUPABASE_JWT_SECRETS and SUPABASE_JWT_SECRET and SUPABASE_JWT_SECRET != "missing-secret-key":
+    SUPABASE_JWT_SECRETS = [SUPABASE_JWT_SECRET]
 
 # ── App ───────────────────────────────────────────────────────────────────────
 APP_NAME: str = "FitAvatar API"
@@ -32,8 +38,8 @@ DEBUG: bool = os.getenv("DEBUG", "false").lower() == "true"
 if (_IS_RENDER or not DEBUG):
     if not DATABASE_URL or "postgresql://postgres:password@localhost" in DATABASE_URL:
         raise RuntimeError("DATABASE_URL is not set correctly for production.")
-    if not SUPABASE_JWT_SECRET or SUPABASE_JWT_SECRET == "missing-secret-key":
-        raise RuntimeError("SUPABASE_JWT_SECRET must be set in production.")
+    if not SUPABASE_JWT_SECRETS:
+        raise RuntimeError("SUPABASE_JWT_SECRET (or SUPABASE_JWT_SECRETS) must be set in production.")
 
 # ── ML Model Paths ────────────────────────────────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
