@@ -1,6 +1,21 @@
 """
 config.py — FitAvatar Backend Configuration
 Loads all environment variables. Never hardcode secrets.
+
+DATABASE_URL Format:
+For Supabase (recommended for production):
+  postgresql://postgres.PROJECT_ID:PASSWORD@aws-REGION.pooler.supabase.com:6543/postgres
+  
+  - PROJECT_ID: Your Supabase project ID (from dashboard)
+  - PASSWORD: Database password (from Supabase settings)
+  - REGION: AWS region (e.g., ap-south-1, us-east-1)
+  - Port 6543 is the transaction-mode pooler (recommended)
+  
+  Example:
+  postgresql://postgres.abcdefgh123456:mysecretpassword@aws-0-ap-south-1.pooler.supabase.com:6543/postgres
+
+For local development:
+  postgresql://postgres:password@localhost:5432/fitavatar
 """
 
 from dotenv import load_dotenv
@@ -18,10 +33,16 @@ DATABASE_URL: str = os.getenv(
 )
 
 # ── Supabase Auth ─────────────────────────────────────────────────────────────
-SUPABASE_JWT_SECRET: str = os.getenv(
-    "SUPABASE_JWT_SECRET", 
-    "missing-secret-key"
-)
+SUPABASE_JWT_SECRET: str = os.getenv("SUPABASE_JWT_SECRET", "missing-secret-key")
+# Optional: allow multiple valid secrets during JWT secret rotation.
+# Format: comma-separated list, e.g. "newsecret,oldsecret"
+SUPABASE_JWT_SECRETS = [
+    s.strip()
+    for s in os.getenv("SUPABASE_JWT_SECRETS", "").split(",")
+    if s.strip()
+]
+if not SUPABASE_JWT_SECRETS and SUPABASE_JWT_SECRET and SUPABASE_JWT_SECRET != "missing-secret-key":
+    SUPABASE_JWT_SECRETS = [SUPABASE_JWT_SECRET]
 
 # ── App ───────────────────────────────────────────────────────────────────────
 APP_NAME: str = "FitAvatar API"
@@ -31,9 +52,14 @@ DEBUG: bool = os.getenv("DEBUG", "false").lower() == "true"
 # Fail-fast in production-like environments to avoid "works locally, breaks on Render".
 if (_IS_RENDER or not DEBUG):
     if not DATABASE_URL or "postgresql://postgres:password@localhost" in DATABASE_URL:
-        raise RuntimeError("DATABASE_URL is not set correctly for production.")
-    if not SUPABASE_JWT_SECRET or SUPABASE_JWT_SECRET == "missing-secret-key":
-        raise RuntimeError("SUPABASE_JWT_SECRET must be set in production.")
+        raise RuntimeError(
+            "DATABASE_URL is not set correctly for production.\n"
+            "Required format for Supabase:\n"
+            "  postgresql://postgres.PROJECT_ID:PASSWORD@aws-REGION.pooler.supabase.com:6543/postgres\n"
+            "Please check your Render environment variables dashboard."
+        )
+    if not SUPABASE_JWT_SECRETS:
+        raise RuntimeError("SUPABASE_JWT_SECRET (or SUPABASE_JWT_SECRETS) must be set in production.")
 
 # ── ML Model Paths ────────────────────────────────────────────────────────────
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
