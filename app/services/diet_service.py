@@ -35,6 +35,7 @@ def get_diet_plan(user: User, db: Session) -> dict:
         target_calories = targets["calories"],
         target_protein  = targets["protein"],
         user_id         = user.id,
+        goal            = user.goal,
     )
 
     # 4. Persist

@@ -1,9 +1,9 @@
 """
-diet_model.py — Real DietTensorModel matching notebook code.ipynb
+diet_model.py — CP Decomposition Diet Model matching app (3).py.
 Architecture: 
-- embeddings: user (20), food (20), country (10), time (10) 
-- fc: 64 -> 128 -> 64 -> 32 -> 1 (Sigmoid)
-- dynamically loads food_to_id from categorical.csv to guarantee 0-error offset.
+- Embeddings: User (100, rank=64), Food (586, rank=64), Context (179, rank=64)
+- Projection: Nutrients (7) -> rank=64
+- MLP: (rank * 3 + 3) -> 128 -> 64 -> 32 -> 1 (Sigmoid)
 """
 
 import os
@@ -14,124 +14,170 @@ import pandas as pd
 import numpy as np
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "models", "diet_recommender_weights.pth")
+MODEL_PATH = os.path.join(BASE_DIR, "models", "cp_diet_model.pth")
 SCALER_PATH = os.path.join(BASE_DIR, "models", "nutrient_scaler.save")
-DATA_DIR = os.path.join(BASE_DIR, "data")
-CAT_DATA_PATH = os.path.join(DATA_DIR, "diet_data_categorical.csv")
+GOAL_TO_ID_PATH = os.path.join(BASE_DIR, "models", "goal_to_id.save")
+COUNTRY_TO_ID_PATH = os.path.join(BASE_DIR, "models", "country_to_id.save")
+FOOD_TO_ID_PATH = os.path.join(BASE_DIR, "models", "food_to_id.save")
 
-# ── Dynamic Mappings from Training Data ───────────────────────────────────────
-# These maps are exclusively initialized when _load_model is called.
-_food_to_id: dict = {}
-_country_to_id: dict = {}
-_time_to_id: dict = {"Breakfast": 1, "Lunch": 2, "Snack": 3, "Dinner": 4}
-
+# Global variables to cache loaded objects
 _model = None
 _scaler = None
+_goal_to_id = None
+_country_to_id = None
+_food_to_id = None
 
-class DietTensorModel(nn.Module):
-    def __init__(self, n_users, n_foods, n_countries, n_times):
+# SAMPLE_UIDS matching random_state=42 sample from numeric dataset
+SAMPLE_UIDS = [84, 54, 71, 46, 45, 40, 23, 81, 11, 1]
+
+# time_to_id mapping
+_time_to_id = {"Breakfast": 1, "Lunch": 2, "Snack": 3, "Dinner": 4}
+goal_display = {
+    "Weight Gain": "Muscle Gain", 
+    "Muscle Gain": "Muscle Gain",
+    "Weight Loss": "Weight Loss", 
+    "Maintenance": "Maintenance"
+}
+
+N_GOALS = 3
+N_TIMES = 4
+
+
+class CPDietModel(nn.Module):
+    def __init__(self, n_users, n_foods, n_contexts, n_nutrients, rank=64):
         super().__init__()
-        self.user_embed    = nn.Embedding(n_users + 1, 20)
-        self.food_embed    = nn.Embedding(n_foods + 1, 20)
-        self.country_embed = nn.Embedding(n_countries + 1, 10)
-        self.time_embed    = nn.Embedding(n_times + 1, 10)
-        self.fc = nn.Sequential(
-            nn.Linear(64, 128), nn.ReLU(), nn.Dropout(0.2),
-            nn.Linear(128, 64), nn.ReLU(),
-            nn.Linear(64, 32),  nn.ReLU(),
-            nn.Linear(32, 1),   nn.Sigmoid(),
-        )
-        
-    def forward(self, u, f, c, t, nutrients):
-        x = torch.cat([self.user_embed(u), self.food_embed(f),
-                       self.country_embed(c), self.time_embed(t), nutrients], dim=1)
-        return self.fc(x)
+        self.U = nn.Embedding(n_users    + 1, rank)
+        self.F = nn.Embedding(n_foods    + 1, rank)
+        self.C = nn.Embedding(n_contexts + 1, rank)
+        for emb in [self.U, self.F, self.C]:
+            nn.init.xavier_uniform_(emb.weight)
+        self.emb_drop  = nn.Dropout(0.2)
+        self.nut_proj  = nn.Linear(n_nutrients, rank)
+        self.mlp = nn.Sequential(
+             nn.Linear(rank * 3 + 3, 128),
+             nn.BatchNorm1d(128),
+             nn.ReLU(),
+             nn.Dropout(0.3),
+             nn.Linear(128, 64),
+             nn.BatchNorm1d(64),
+             nn.ReLU(),
+             nn.Dropout(0.2),
+             nn.Linear(64, 32),
+             nn.ReLU(),
+             nn.Linear(32, 1),
+             nn.Sigmoid()
+        )         
+         
+    def forward(self, u, f, ctx, nutrients):
+        u_e   = self.emb_drop(self.U(u))
+        f_e   = self.emb_drop(self.F(f))
+        ctx_e = self.emb_drop(self.C(ctx))
+        triple   = u_e * f_e * ctx_e
+        n_e      = self.nut_proj(nutrients)
+        nut_ctx  = n_e * ctx_e
+        u_f      = u_e * f_e
+        cp_score = triple.sum(dim=1,  keepdim=True)
+        nc_score = nut_ctx.sum(dim=1, keepdim=True)
+        uf_score = u_f.sum(dim=1,     keepdim=True)
+        combined = torch.cat([triple, nut_ctx, u_f, cp_score, nc_score, uf_score], dim=1)
+        return self.mlp(combined)
+
+
+def encode_context(country_id, goal_id, time_id):
+    return (int(country_id)-1)*(N_GOALS*N_TIMES) + (int(goal_id)-1)*N_TIMES + (int(time_id)-1)
+
 
 def _load_model():
-    """Lazily load the model, scaler, and exact dataset mappings."""
-    global _model, _scaler, _food_to_id, _country_to_id
-    
+    """Lazily load the CP model and scaler artifacts."""
+    global _model, _scaler, _goal_to_id, _country_to_id, _food_to_id
     if _model is not None:
         return
 
-    # 1. Rebuild EXACT alphabetical mappings from notebook's categorical data
-    df_cat = pd.read_csv(CAT_DATA_PATH)
-    unique_countries = sorted(df_cat['country'].unique())
-    unique_foods = sorted(df_cat['food_name'].unique())
+    _goal_to_id = joblib.load(GOAL_TO_ID_PATH)
+    _country_to_id = joblib.load(COUNTRY_TO_ID_PATH)
+    _food_to_id = joblib.load(FOOD_TO_ID_PATH)
+    _scaler = joblib.load(SCALER_PATH)
 
-    _country_to_id = {name: i+1 for i, name in enumerate(unique_countries)}
-    _food_to_id = {name: i+1 for i, name in enumerate(unique_foods)}
-    
-    # 2. Hardcoded limits from the training (Numeric CSV max indices)
-    # The training notebook extracted n_foods from max string ID mappings OR max df_num.
-    # From df_num: n_users=100, n_foods=586, n_countries=15, n_times=4
-    _model = DietTensorModel(n_users=100, n_foods=586, n_countries=15, n_times=4)
-
-    if os.path.exists(MODEL_PATH):
-        _model.load_state_dict(torch.load(MODEL_PATH, map_location="cpu", weights_only=True))
-        print("[DietModel] Loaded DietTensorModel weights successfully.")
-    else:
-        print("[DietModel] ERR: weights file not found!")
-        
+    # Rebuild CP model (n_users=100, n_foods=586, n_contexts=179, n_nutrients=7)
+    _model = CPDietModel(100, 586, 179, 7, rank=64)
+    _model.load_state_dict(torch.load(MODEL_PATH, map_location="cpu"))
     _model.eval()
+    print("[DietModel] CPDietModel and artifacts loaded successfully.")
 
-    if os.path.exists(SCALER_PATH):
-        _scaler = joblib.load(SCALER_PATH)
-        print("[DietModel] Loaded nutrient scaler successfully.")
-    else:
-        print("[DietModel] ERR: scaler not found!")
 
 def compute_targets(weight: float, height: float, age: int, gender: str, goal: str) -> dict:
-    """Mifflin-St Jeor BMR + goal adjustment. Exact match to code.ipynb."""
-    if gender.lower() == "female":
-        bmr = 10 * weight + 6.25 * height - 5 * age - 161
+    """BMR computation matching original script Mifflin-St Jeor."""
+    if gender.lower() == 'male':
+        bmr = 10*weight + 6.25*height - 5*age + 5
     else:
-        bmr = 10 * weight + 6.25 * height - 5 * age + 5
+        bmr = 10*weight + 6.25*height - 5*age - 161
 
-    goal_l = goal.lower()
-    if "gain" in goal_l:
-        daily_cal = bmr + 500
-        prot_factor = 2.0
-    elif "loss" in goal_l:
-        daily_cal = bmr - 500
-        prot_factor = 1.5
+    if goal in ("Weight Gain", "Muscle Gain"):
+        daily_cal, prot_factor = bmr + 500, 2.0
+    elif goal == "Weight Loss":
+        daily_cal, prot_factor = bmr - 500, 1.5
     else:
-        daily_cal = bmr
-        prot_factor = 1.0
+        daily_cal, prot_factor = bmr, 1.0
 
     return {
-        "calories": max(1200, int(daily_cal)), 
-        "protein": int(weight * prot_factor)
+        "calories": max(1200, round(daily_cal)),
+        "protein": round(weight * prot_factor)
     }
 
-def score_food(food_name: str, food_data: dict, country_name: str, meal_type: str, user_id: int = 1) -> float:
-    """Return model suitability score 0-1 for a food item given context."""
+
+def score_food(food_name: str, food_data: dict, country_name: str, meal_type: str, user_id: int = 1, goal: str = "Maintenance") -> float:
+    """Calculate average suitability score for a food item across SAMPLE_UIDS using CPDietModel."""
     _load_model()
-    
-    # Map cleanly
-    f_id = _food_to_id.get(food_name, 1)
-    c_id = _country_to_id.get(country_name, 15)
-    t_id = _time_to_id.get(meal_type.title(), 1)
-    
-    raw = [[
-        float(food_data["calories"]), 
-        float(food_data["protein_g"]),
-        float(food_data["fat_g"]),    
-        float(food_data["carbs_g"])
-    ]]
 
-    if _scaler is not None:
-        nut_input = torch.FloatTensor(_scaler.transform(np.array(raw, dtype=np.float32)))
-    else:
-        nut_input = torch.FloatTensor(raw)
+    # Map food name to ID
+    f_id = _food_to_id.get(food_name)
+    if f_id is None:
+        lower_food_map = {k.lower(): v for k, v in _food_to_id.items()}
+        f_id = lower_food_map.get(food_name.lower(), 1)
 
+    # Map country name to ID
+    country_key = country_name.strip().title()
+    country_id = _country_to_id.get(country_key)
+    if country_id is None:
+        lower_country_map = {k.lower(): v for k, v in _country_to_id.items()}
+        country_id = lower_country_map.get(country_key.lower(), 1)
+
+    # Map goal to ID
+    dataset_goal = goal_display.get(goal, "Maintenance")
+    goal_id = _goal_to_id.get(dataset_goal, 3)
+
+    # Map meal type to ID
+    t_id = _time_to_id.get(meal_type.strip().title(), 1)
+
+    # Encode context ID
+    ctx = encode_context(country_id, goal_id, t_id)
+
+    # Compute nutritional features
+    cals = float(food_data["calories"])
+    prot = float(food_data["protein_g"])
+    fat = float(food_data["fat_g"])
+    carbs = float(food_data["carbs_g"])
+
+    p_rat = prot / (cals + 1)
+    c_rat = carbs / (cals + 1)
+    f_rat = fat / (cals + 1)
+
+    nut_features = pd.DataFrame(
+        [[cals, prot, fat, carbs, p_rat, c_rat, f_rat]], 
+        columns=['calories', 'protein_g', 'fat_g', 'carbs_g', 'protein_ratio', 'carb_ratio', 'fat_ratio']
+    )
+    scaled_nut = torch.FloatTensor(_scaler.transform(nut_features))
+
+    # Evaluate model for all SAMPLE_UIDS
+    scores = []
     with torch.no_grad():
-        score = _model(
-            torch.LongTensor([user_id]), 
-            torch.LongTensor([f_id]),
-            torch.LongTensor([c_id]), 
-            torch.LongTensor([t_id]), 
-            nut_input
-        ).item()
-        
-    return float(score)
+        for uid in SAMPLE_UIDS:
+            s = _model(
+                torch.LongTensor([uid]),
+                torch.LongTensor([f_id]),
+                torch.LongTensor([ctx]),
+                scaled_nut
+            ).item()
+            scores.append(s)
+
+    return sum(scores) / len(scores)

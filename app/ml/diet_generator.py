@@ -1,57 +1,45 @@
 """
-diet_generator.py — Meal plan generator matching notebook output exactly.
-
-Output format (matches screenshot):
-  - breakfast: 25% of daily_cal → 2 options × 3 foods, each food shown with grams + protein + kcal
-  - lunch:     35%
-  - snack:     10%
-  - dinner:    30%
-
-Food selection: model scores all country foods for the meal, top-3 = Option 1, next-3 = Option 2.
-Grams: target_cal_per_item / food_cal_per_100g × 100, capped at 300g.
+diet_generator.py — Meal plan generator using CPDietModel suitability scoring.
 """
-import random
+
 from app.ml.food_database import get_foods, get_country_key
 from app.ml.diet_model import score_food
 
-MEAL_RATIOS = {"breakfast": 0.25, "lunch": 0.35, "snack": 0.10, "dinner": 0.30}
-OPTIONS_PER_MEAL = 2
-FOODS_PER_OPTION = 3
+MEAL_CAL_RATIOS  = {"breakfast": 0.25, "lunch": 0.35, "snack": 0.10, "dinner": 0.30}
+MEAL_PROT_RATIOS = {"breakfast": 0.25, "lunch": 0.35, "snack": 0.05, "dinner": 0.35}
+CAL_WEIGHTS      = [0.38, 0.35, 0.27]
 
 
-def _build_option(ranked_foods: list, option_idx: int, daily_cal: int, ratio: float) -> dict:
+def _calc_option(items: list, cal_target: float, prot_target: float, option_idx: int) -> dict:
     """
-    Build one meal option from a ranked food slice.
-    Returns option dict matching API response shape.
+    Calculate portion sizes (grams) for each item in the option.
+    Uses BMR targets and caloric/protein densities.
     """
-    slice_start = option_idx * FOODS_PER_OPTION
-    slice_end   = slice_start + FOODS_PER_OPTION
-    items       = ranked_foods[slice_start:slice_end]
+    if len(items) < 3:
+        return {"option": option_idx, "foods": []}
 
-    if not items:
-        return {"option": option_idx + 1, "foods": []}
-
-    target_cal_per_item = (daily_cal * ratio) / FOODS_PER_OPTION
     food_list = []
-
-    for food in items:
-        cal_per_100g  = max(food["calories"], 1)
-        grams         = (target_cal_per_item / cal_per_100g) * 100
-        grams         = min(round(grams), 300)   # cap at 300g (matches notebook)
-
-        achieved_cal  = round((food["calories"]  * grams) / 100)
-        achieved_prot = round((food["protein_g"] * grams) / 100)
+    for idx, item in enumerate(items[:3]):
+        gcal  = (cal_target  * CAL_WEIGHTS[idx] / item['cal_100'])  * 100
+        gprot = (prot_target * CAL_WEIGHTS[idx] / item['prot_100']) * 100 \
+                if item['prot_100'] > 0 else gcal
+        
+        # Portion size capped between 30g and 400g (as per app (3).py)
+        g  = max(min(round((gcal + gprot) / 2), 400), 30)
+        pr = round((item['prot_100'] * g) / 100)
+        cl = round((item['cal_100']  * g) / 100)
 
         food_list.append({
-            "name":       food["name"],
-            "grams":      grams,
-            "protein":    achieved_prot,
-            "calories":   achieved_cal,
-            "protein_g":  food["protein_g"],   # per-100g reference
-            "calories_per_100g": food["calories"],
+            "name":       item['name'],
+            "grams":      g,
+            "protein":    pr,
+            "calories":   cl,
+            "score":      round(item['score'], 3),
+            "protein_g":  item['prot_100'],
+            "calories_per_100g": item['cal_100'],
         })
 
-    return {"option": option_idx + 1, "foods": food_list}
+    return {"option": option_idx, "foods": food_list}
 
 
 def generate_meal_plan(
@@ -59,22 +47,24 @@ def generate_meal_plan(
     target_calories: int,
     target_protein: int,
     user_id: int,
+    goal: str = "Maintenance",
 ) -> dict:
     """
-    Generate a full-day meal plan for the given country and targets.
-    Uses DietTensorModel to rank foods by suitability before selection.
-    Returns dict with keys: breakfast, lunch, snack, dinner.
-    Each value is a list of option dicts.
+    Generate a full-day meal plan for the given country, targets and user goal.
+    Scores candidates with CPDietModel and pools them into high, medium, and low protein buckets.
     """
     country_key = get_country_key(location)
     meals_out   = {}
 
-    for meal_type, ratio in MEAL_RATIOS.items():
+    for meal_type in ["breakfast", "lunch", "snack", "dinner"]:
         foods = get_foods(location, meal_type)
 
         if not foods:
             meals_out[meal_type] = []
             continue
+
+        cal_target  = target_calories * MEAL_CAL_RATIOS[meal_type]
+        prot_target = target_protein * MEAL_PROT_RATIOS[meal_type]
 
         # Score every food item with the AI model
         scored = []
@@ -86,21 +76,49 @@ def generate_meal_plan(
                     country_name = country_key,
                     meal_type    = meal_type,
                     user_id      = user_id,
+                    goal         = goal,
                 )
             except Exception:
                 score = 0.5    # fallback if model errors
-            scored.append((score, food))
+            
+            scored.append({
+                "name":      food["name"],
+                "score":     score,
+                "cal_100":   food["calories"],
+                "prot_100":  food["protein_g"],
+                "fat_100":   food["fat_g"],
+                "carbs_100": food["carbs_g"],
+            })
 
-        # Sort descending by model score
-        scored.sort(key=lambda x: x[0], reverse=True)
-        ranked = [f for _, f in scored]
+        # Pool selection logic from app (3).py
+        high = sorted([x for x in scored if x['prot_100'] >= 15], key=lambda x: x['score'], reverse=True)
+        med  = sorted([x for x in scored if  5 <= x['prot_100'] < 15], key=lambda x: x['score'], reverse=True)
+        low  = sorted([x for x in scored if x['prot_100'] <  5], key=lambda x: x['score'], reverse=True)
+        all_ = sorted(scored, key=lambda x: x['score'], reverse=True)
 
-        # Build OPTIONS_PER_MEAL options, each with FOODS_PER_OPTION items
-        options = []
-        for i in range(OPTIONS_PER_MEAL):
-            opt = _build_option(ranked, i, target_calories, ratio)
-            options.append(opt)
+        def build_pool(exclude):
+            pool, used = [], set(exclude)
+            for bucket in [high, med, low, all_]:
+                for item in bucket:
+                    if item['name'] not in used:
+                        pool.append(item)
+                        used.add(item['name'])
+                        break
+                if len(pool) == 3:
+                    break
+            for item in all_:
+                if len(pool) >= 3:
+                    break
+                if item['name'] not in {i['name'] for i in pool}:
+                    pool.append(item)
+            return pool
 
-        meals_out[meal_type] = options
+        pool1 = build_pool(set())
+        pool2 = build_pool({i['name'] for i in pool1})
+
+        opt1 = _calc_option(pool1, cal_target, prot_target, option_idx=1)
+        opt2 = _calc_option(pool2, cal_target, prot_target, option_idx=2)
+
+        meals_out[meal_type.title()] = [opt1, opt2]
 
     return meals_out
