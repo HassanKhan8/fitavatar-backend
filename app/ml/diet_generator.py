@@ -29,11 +29,16 @@ def _calc_option(items: list, cal_target: float, prot_target: float, option_idx:
         pr = round((item['prot_100'] * g) / 100)
         cl = round((item['cal_100']  * g) / 100)
 
+        cr = round((item['carbs_100'] * g) / 100)
+        fat = round((item['fat_100'] * g) / 100)
+
         food_list.append({
             "name":       item['name'],
             "grams":      g,
             "protein":    pr,
             "calories":   cl,
+            "carbs":      cr,
+            "fat":        fat,
             "score":      round(item['score'], 3),
             "protein_g":  item['prot_100'],
             "calories_per_100g": item['cal_100'],
